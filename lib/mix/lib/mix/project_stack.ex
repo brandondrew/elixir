@@ -105,6 +105,14 @@ defmodule Mix.ProjectStack do
     end)
   end
 
+  @spec compile_env() :: [{[term], term}]
+  def compile_env() do
+    get_stack(fn
+      [h | _] -> h.compile_env
+      [] -> []
+    end)
+  end
+
   @spec prepend_after_compile(fun) :: :ok
   def prepend_after_compile(fun) do
     update_stack(fn
@@ -180,31 +188,30 @@ defmodule Mix.ProjectStack do
   @spec push(module, config, file) :: :ok | {:error, file}
   def push(module, config, file) do
     update_state(fn {stack, post_config} ->
-      # Consider the first children to always have io_done
-      # because we don't need to print anything unless another
-      # project takes ahold of the shell.
-      io_done? = stack == []
-      config = Keyword.merge(config, post_config)
+      if error_file = find_project_named(module, stack) do
+        {{:error, error_file}, {stack, post_config}}
+      else
+        # Consider the first children to always have io_done
+        # because we don't need to print anything unless another
+        # project takes ahold of the shell.
+        io_done? = stack == []
+        config = Keyword.merge(config, post_config)
 
-      project = %{
-        name: module,
-        config: config,
-        file: file,
-        pos: length(stack),
-        recursing?: false,
-        io_done: io_done?,
-        config_apps: [],
-        config_files: [file] ++ peek_config_files(config[:inherit_parent_config_files], stack),
-        config_mtime: nil,
-        after_compile: []
-      }
+        project = %{
+          name: module,
+          config: config,
+          file: file,
+          pos: length(stack),
+          recursing?: false,
+          io_done: io_done?,
+          config_apps: [],
+          config_files: [file] ++ peek_config_files(config[:inherit_parent_config_files], stack),
+          config_mtime: nil,
+          compile_env: [],
+          after_compile: []
+        }
 
-      cond do
-        file = find_project_named(module, stack) ->
-          {{:error, file}, {stack, post_config}}
-
-        true ->
-          {:ok, {[project | stack], []}}
+        {:ok, {[project | stack], []}}
       end
     end)
   end
@@ -262,5 +269,16 @@ defmodule Mix.ProjectStack do
   def handle_call({:update_state, fun}, _from, state) do
     {reply, state} = fun.(state)
     {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_info({:compile_env, {app, path, return}}, {stack, post_config}) do
+    with [%{config: config, compile_env: compile_env} = project | stack] <- stack,
+         ^app <- config[:app] do
+      project = %{project | compile_env: [{path, return} | compile_env]}
+      {:noreply, {[project | stack], post_config}}
+    else
+      _ -> {:noreply, {stack, post_config}}
+    end
   end
 end

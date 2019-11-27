@@ -12,6 +12,8 @@ defmodule Mix.Tasks.Compile.All do
   @impl true
   def run(args) do
     Mix.Project.get!()
+    config = Mix.Project.config()
+    compilers = Mix.Tasks.Compile.compilers(config)
 
     # Make sure Mix.Dep is cached to avoid loading dependencies
     # during compilation. It is likely this will be invoked anyway,
@@ -19,28 +21,33 @@ defmodule Mix.Tasks.Compile.All do
     Mix.Dep.cached()
 
     # Build the project structure so we can write down compiled files.
-    Mix.Project.build_structure()
+    Mix.Project.build_structure(config)
 
-    with_logger_app(fn ->
-      {status, diagnostic} = do_compile(compilers(), args, :noop, [])
+    with_globals(config, fn ->
+      {status, diagnostic} = do_compile(compilers, args, :noop, [])
       for fun <- Mix.ProjectStack.pop_after_compile(), do: fun.(status)
       true = Code.prepend_path(Mix.Project.compile_path())
       {status, diagnostic}
     end)
   end
 
-  defp with_logger_app(fun) do
-    app = Keyword.fetch!(Mix.Project.config(), :app)
+  defp with_globals(config, fun) do
+    app = Keyword.fetch!(config, :app)
+    stack = Process.whereis(Mix.ProjectStack)
     logger? = Process.whereis(Logger)
     logger_config_app = Application.get_env(:logger, :compile_time_application)
 
     try do
+      Application.put_compile_env_listener(stack)
+
       if logger? do
         Logger.configure(compile_time_application: app)
       end
 
       fun.()
     after
+      Application.delete_compile_env_listener(stack)
+
       if logger? do
         Logger.configure(compile_time_application: logger_config_app)
       end
@@ -73,10 +80,5 @@ defmodule Mix.Tasks.Compile.All do
 
   defp run_compiler(compiler, args) do
     Mix.Task.Compiler.normalize(Mix.Task.run("compile.#{compiler}", args), compiler)
-  end
-
-  defp compilers() do
-    # TODO: Deprecate :xref on v1.12
-    List.delete(Mix.Tasks.Compile.compilers(), :xref)
   end
 end
